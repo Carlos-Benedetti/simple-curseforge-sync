@@ -5,21 +5,106 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"mine_sync/src/config"
 	"mine_sync/src/types"
+	"mine_sync/src/utils"
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
+	"runtime"
+
+	"github.com/manifoldco/promptui"
 )
 
 type CurseForge struct {
-	API_KEY string
-	Client  *http.Client
-	GameId  int
+	API_KEY    string
+	Client     *http.Client
+	GameId     int
+	userFolder string
 }
 
+func NewCurseForge(apiKey string, Client *http.Client, GameId int) CurseForge {
+	var userFolder string
+
+	switch runtime.GOOS {
+	case "windows":
+		userFolder = os.Getenv("USERPROFILE")
+	}
+
+	curseForgeFolder, _ := filepath.Abs(fmt.Sprintf("%s/%s/%s/%s", userFolder, "curseforge", "minecraft", "Instances"))
+
+	return CurseForge{
+		API_KEY:    apiKey,
+		Client:     Client,
+		GameId:     GameId,
+		userFolder: curseForgeFolder,
+	}
+}
+
+func (c CurseForge) AskInstancePath() (string, error) {
+	fmt.Println("Caminho da pasta não definipor por argumento -out")
+	var path *string
+	lastInstance := config.GetLastSession()
+	if lastInstance != nil && *lastInstance != "" {
+		prompt := promptui.Prompt{
+			Label:     fmt.Sprintf("Atualizar mods em %s", *lastInstance),
+			IsConfirm: true,
+			Default:   "Y",
+		}
+
+		response, no := prompt.Run()
+		if no == nil && response != "n" && response != "N" {
+			path = lastInstance
+		}
+	}
+	if path == nil {
+
+		prompt := promptui.Prompt{
+			Label: "Caminho da pasta sua mods(~/Documents/curseforge/minecraft/Instances/mockpackname/mods)",
+		}
+
+		result, err := prompt.Run()
+
+		if err != nil {
+			fmt.Printf("Falha ao selecionar instancia %v\n", err)
+			return "", fmt.Errorf("Falha ao selecionar instancia %v\n", err)
+		}
+		path = &result
+	}
+	config.SetLastCSession(*path)
+	return *path, nil
+}
+
+func (c CurseForge) SearchInstancePath() (string, error) {
+
+	entries, err := os.ReadDir(c.userFolder)
+	// entries, err := utils.FilePathWalkDir(c.userFolder)
+	nameEntries := utils.Map(entries, func(it os.DirEntry) string {
+		return it.Name()
+	})
+	if err != nil {
+		return "", fmt.Errorf("Falha ao buscar instancias do curseforge")
+	}
+	for _, entry := range nameEntries {
+		fmt.Println(entry)
+	}
+
+	prompt := promptui.Select{
+		Label: "Qual isntancia?",
+		Items: nameEntries,
+	}
+
+	_, result, err := prompt.Run()
+
+	if err != nil {
+		return "", fmt.Errorf("Select prompt falhou %v\n", err)
+	}
+	return result, nil
+}
 func (c CurseForge) SearchMod(searchFilter string) (types.Data, error) {
 
-	fullUrl := c.base_url()
+	fullUrl := c.baseUrl()
 	fullUrl.Path = "/v1/mods/search"
 	q := fullUrl.Query()
 	q.Add("gameId", fmt.Sprintf("%d", c.GameId))
@@ -48,7 +133,7 @@ func (m *CurseForge) getData(modID int) (types.GetModResponse, error) {
 	var getModResponse types.GetModResponse
 	log.Printf("fetching mod Data: %d", modID)
 
-	fullUrl := m.base_url()
+	fullUrl := m.baseUrl()
 	fullUrl.Path = fmt.Sprintf("/v1/mods/%d", modID)
 	err := m.innerFetch(fullUrl.String(), "GET", nil, &getModResponse)
 
@@ -61,20 +146,20 @@ func (m *CurseForge) getData(modID int) (types.GetModResponse, error) {
 
 func (c *CurseForge) GetFileByID(modID int, fileID int) (types.File, error) {
 	var getModFileResponse types.GetModFileResponse
-	log.Printf("fetching mod files: %d", modID)
+	// log.Printf("fetching mod files: %d", modID)
 
-	fullUrl := c.base_url()
+	fullUrl := c.baseUrl()
 	fullUrl.Path = fmt.Sprintf("/v1/mods/%d/files/%d", modID, fileID)
 	err := c.innerFetch(fullUrl.String(), "GET", nil, &getModFileResponse)
 
 	if err != nil {
-		return types.File{}, fmt.Errorf("fail to find mod: %v", err)
+		return types.File{}, fmt.Errorf("fail to find mod with ID %d: %v", modID, err)
 	}
 
 	return getModFileResponse.Data, nil
 }
 
-func (c CurseForge) base_url() *url.URL {
+func (c CurseForge) baseUrl() *url.URL {
 	return &url.URL{
 		Scheme: "https",
 		Host:   "api.curseforge.com",

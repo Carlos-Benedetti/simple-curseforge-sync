@@ -1,1 +1,3 @@
 mods/*
+dist/config.ini
+dist/app.log

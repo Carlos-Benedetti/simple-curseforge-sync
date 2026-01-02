@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -11,6 +10,7 @@ import (
 	"mine_sync/src/types/manifest"
 	"net/http"
 	"os"
+	"path"
 	"path/filepath"
 	"time"
 )
@@ -20,15 +20,30 @@ var MOD_LOADER_TYPE = "1"
 var DEFAUL_MODS_FOLDER = "/home/bene/workspace/bene/mine-sync/mods"
 var DEFAULT_MANIFEST_LINK = "https://raw.githubusercontent.com/Carlos-Benedetti/simple-curseforge-sync/refs/heads/master/manifest.json"
 
-var curseForge = curse.CurseForge{
-	API_KEY: "$2a$10$H3mU24im8aLckaz47zeHgOof82pJlmnRgo.GooHwtCTpnVJr5bfWS",
-	Client: &http.Client{
+var curseForge = curse.NewCurseForge(
+	"$2a$10$H3mU24im8aLckaz47zeHgOof82pJlmnRgo.GooHwtCTpnVJr5bfWS",
+	&http.Client{
 		Timeout: time.Second * 10,
 	},
-	GameId: 432,
-}
+	432,
+)
 
 func main() {
+
+	logFile, err := os.OpenFile("app.log", os.O_RDWR|os.O_CREATE|os.O_APPEND, 0666)
+	if err != nil {
+		log.Fatalf("error opening file: %v", err)
+	}
+
+	mw := io.MultiWriter(os.Stdout, logFile)
+
+	defer logFile.Close()
+
+	// Set the standard logger's output to the multi-writer.
+	log.SetOutput(mw)
+
+	// Optional: set log flags (e.g., date, time, short file name)
+	log.SetFlags(log.Ldate | log.Ltime | log.Lshortfile)
 
 	MODS_FOLDER := flag.String("out", "", "mods folder")
 	MANIFEST_LINK := flag.String("manifest", DEFAULT_MANIFEST_LINK, "mods folder")
@@ -38,37 +53,39 @@ func main() {
 
 	flag.Parse()
 
-	// Access the values (dereference pointers for flag.String, flag.Int, flag.Bool)
-	fmt.Println("MODS_FOLDER:", *MODS_FOLDER)
 	if *MODS_FOLDER == "" {
-		reader := bufio.NewReader(os.Stdin)
-		fmt.Println("Caminho da pasta nçao definipor por argumento -out")
-		fmt.Print("Caminho da pasta sua mods(~/Documents/curseforge/minecraft/Instances/mockpackname/mods): ")
+		text, err := curseForge.AskInstancePath()
+		if err != nil {
+			log.Fatalln(err)
+		}
+		text = filepath.Clean(text)
+		if err != nil {
+			panic(err)
+		}
 
-		text, _ := reader.ReadString('\n')
-		fmt.Println(text)
 		MODS_FOLDER = &text
-	}
 
-	log.Println(MODS_FOLDER)
+	}
 
 	manifest, err := downloadManifest(*MANIFEST_LINK)
 	if err != nil {
 		log.Fatalln(err)
 	}
 
+	clearModsFolder(*MODS_FOLDER)
+	log.Printf("Total de mods a baixar: %d", len(manifest.Files))
 	for _, mod := range manifest.Files {
 		modFile, err := curseForge.GetFileByID(mod.ProjectID, mod.FileID)
 		if err != nil {
 			log.Fatalln(err)
 		}
 		absPath, _ := filepath.Abs(fmt.Sprintf("%s/%s", *MODS_FOLDER, modFile.FileName))
+		log.Printf("Downloading mod: %s to %s", modFile.FileName, absPath)
 		err = curseForge.FetchFile(modFile.DownloadUrl, absPath)
 		if err != nil {
 			log.Fatalln(err)
 		}
 	}
-
 }
 
 type ModFile struct {
@@ -102,4 +119,20 @@ func downloadManifest(url string) (manifest.Manifest, error) {
 	}
 
 	return manifest, nil
+}
+
+func clearModsFolder(folder string) {
+
+	if len(folder) < 6 {
+		log.Fatalln("Caminho é muito curto, medo de ser um diretorio root, por motivos de bug, não deletarei nada, flws")
+	}
+	entries, err := os.ReadDir(folder)
+	if err != nil {
+		log.Fatalf("Falha ao apagar mods antigos da pasta %s", folder)
+	}
+	log.Printf("Total de mods anteriormente: %d", len(entries))
+	for _, d := range entries {
+		os.RemoveAll(path.Join([]string{folder, d.Name()}...))
+	}
+
 }
